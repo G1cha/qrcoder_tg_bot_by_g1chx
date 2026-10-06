@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "BOT_STATE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "5debc746aa2f4330be167aa71c7c2823"
 
 [[queues.producers]]
 binding = "QR_JOBS"

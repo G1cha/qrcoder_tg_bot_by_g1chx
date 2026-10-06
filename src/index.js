@@ -1,4 +1,4 @@
-import QRCode from "qrcode";
+import { create as createQr } from "qrcode/lib/core/qrcode.js";
 import { MAX_ORDERS, parseOrders } from "./orders.js";
 
 const PREFERENCES_TTL = 60 * 60 * 24 * 30;
@@ -209,24 +209,111 @@ function photoCaption(job) {
   return job.damaged ? `${caption}\n⚠️ ПОВРЕЖДЁННЫЙ ЗАКАЗ` : caption;
 }
 
+function writeUint32(target, value) {
+  target.push(
+    (value >>> 24) & 0xff,
+    (value >>> 16) & 0xff,
+    (value >>> 8) & 0xff,
+    value & 0xff
+  );
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBytes = new TextEncoder().encode(type);
+  const chunk = [];
+  writeUint32(chunk, data.length);
+  chunk.push(...typeBytes, ...data);
+  writeUint32(chunk, crc32([...typeBytes, ...data]));
+  return chunk;
+}
+
+function concatenateBytes(parts) {
+  const output = new Uint8Array(parts.reduce((size, part) => size + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+export async function createQrPng(text) {
+  const imageSize = 512;
+  const margin = 4;
+  const { modules } = createQr(text, { errorCorrectionLevel: "M" });
+  const moduleScale = imageSize / (modules.size + margin * 2);
+  const pixels = new Uint8Array((imageSize + 1) * imageSize);
+
+  for (let y = 0; y < imageSize; y += 1) {
+    const rowOffset = y * (imageSize + 1);
+    pixels[rowOffset] = 0;
+    const moduleY = Math.floor(y / moduleScale) - margin;
+    for (let x = 0; x < imageSize; x += 1) {
+      const moduleX = Math.floor(x / moduleScale) - margin;
+      const isDark =
+        moduleX >= 0 &&
+        moduleY >= 0 &&
+        moduleX < modules.size &&
+        moduleY < modules.size &&
+        modules.get(moduleY, moduleX);
+      pixels[rowOffset + x + 1] = isDark ? 0 : 0xff;
+    }
+  }
+
+  const header = [];
+  writeUint32(header, imageSize);
+  writeUint32(header, imageSize);
+  header.push(8, 0, 0, 0, 0);
+
+  const compressedPixels = new Uint8Array(
+    await new Response(
+      new Blob([pixels]).stream().pipeThrough(new CompressionStream("deflate"))
+    ).arrayBuffer()
+  );
+  const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+
+  return concatenateBytes([
+    signature,
+    new Uint8Array(pngChunk("IHDR", header)),
+    new Uint8Array(pngChunk("IDAT", compressedPixels)),
+    new Uint8Array(pngChunk("IEND", []))
+  ]);
+}
+
 async function sendQrPhoto(env, job) {
-  const png = await QRCode.toBuffer(job.orderNumber, {
-    width: 512,
-    margin: 2,
-    errorCorrectionLevel: "M"
-  });
+  const png = await createQrPng(job.orderNumber);
   const form = new FormData();
   form.set("chat_id", String(job.chatId));
   form.set("caption", photoCaption(job));
-  form.set("photo", new Blob([png], { type: "image/png" }), `order-${job.orderNumber}.png`);
+  form.set("photo", new Blob([png], { type: "image/png" }), "order-qr.png");
 
   const response = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendPhoto`, {
     method: "POST",
     body: form
   });
-  const result = await response.json();
+  const responseText = await response.text();
+  let result;
+  try {
+    result = JSON.parse(responseText);
+  } catch {
+    throw new Error(`Telegram sendPhoto returned HTTP ${response.status} with a non-JSON response`);
+  }
+
   if (!response.ok || !result.ok) {
-    throw new Error(`Telegram sendPhoto failed: ${result.description ?? response.statusText}`);
+    throw new Error(
+      `Telegram sendPhoto failed (HTTP ${response.status}, error ${result.error_code ?? "unknown"}): ${result.description ?? response.statusText}`
+    );
   }
 }
 
@@ -244,7 +331,7 @@ async function handleQueue(batch, env) {
           await sendMessage(
             env,
             job.chatId,
-            `Не удалось отправить QR-код заказа «${job.orderNumber}» после нескольких попыток.`
+            `Не удалось отправить QR-код заказа «${job.orderNumber}» после нескольких попыток. Причина: ${error.message}`
           );
         } catch (notificationError) {
           console.error("Failed to notify user about QR delivery:", notificationError);

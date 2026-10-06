@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import QRCode from "qrcode";
+import { PNG } from "pngjs";
 import { MAX_ORDERS, parseOrders } from "../src/orders.js";
-import worker from "../src/index.js";
+import worker, { createQrPng } from "../src/index.js";
 
 test("ignores empty lines and trims repeated whitespace when enabled", () => {
   assert.deepEqual(parseOrders("\n  A   123  \n\nB456\n", true), ["A 123", "B456"]);
@@ -28,8 +28,12 @@ test("rejects empty and excessively long orders", () => {
 });
 
 test("QR library generates a PNG image", async () => {
-  const png = await QRCode.toBuffer("123456789", { width: 128, margin: 2 });
-  assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  const png = await createQrPng("123456789");
+  const decoded = PNG.sync.read(Buffer.from(png));
+  assert.equal(decoded.width, 512);
+  assert.equal(decoded.height, 512);
+  assert.ok(decoded.data.includes(0));
+  assert.ok(decoded.data.includes(255));
 });
 
 test("webhook settings enqueue separate QR jobs and queue sends PNG photos", async (t) => {
