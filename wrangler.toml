@@ -1,0 +1,19 @@
+name = "qrcoder-telegram-bot"
+main = "src/index.js"
+compatibility_date = "2025-03-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[kv_namespaces]]
+binding = "BOT_STATE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[[queues.producers]]
+binding = "QR_JOBS"
+queue = "qrcoder-qr-jobs"
+
+[[queues.consumers]]
+queue = "qrcoder-qr-jobs"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 5
+max_concurrency = 1
